@@ -1,0 +1,1681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Management System</title>
+    <script src="https://cdn.tailwindcss.com">
+function showAdminPanel() {
+    const panel = document.getElementById('admin-panel');
+    if (panel) panel.classList.remove('hidden');
+}
+
+function adminAddCourseByDiscipline() {
+    const discipline = document.getElementById('admin-discipline').value;
+    const name = document.getElementById('admin-course-name').value.trim();
+    const credits = parseInt(document.getElementById('admin-course-credits').value);
+
+    if (!discipline || !name || !credits) {
+        alert('Fill all fields');
+        return;
+    }
+
+    const users = JSON.parse(localStorage.getItem('users') || '{}');
+
+    Object.keys(users).forEach(u => {
+        const user = users[u];
+        if (user.discipline === discipline) {
+            user.semesters.forEach(sem => {
+                user.courses[sem].push({
+                    id: Date.now() + Math.random(),
+                    name,
+                    credits,
+                    grade: ''
+                });
+            });
+        }
+    });
+
+    localStorage.setItem('users', JSON.stringify(users));
+    alert(`Course added for ${discipline} students`);
+}
+
+
+/* ===== SAFE TIMETABLE GRID (FIXED) ===== */
+const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const TIME_SLOTS = [
+ "08:00-09:00","09:00-10:00","10:00-11:00","11:00-12:00",
+ "12:00-13:00","13:00-14:00","14:00-15:00",
+ "15:00-16:00","16:00-17:00","17:00-18:00"
+];
+
+function makeCell(content, isHeader = false, entryId = null) {
+    const div = document.createElement("div");
+    const hasClass = !!content;
+
+    div.className =
+        "border border-slate-600 p-2 text-center text-sm transition-all " +
+        (isHeader
+            ? "bg-slate-700 font-bold text-cyan-300 cursor-default"
+            : hasClass
+                ? "bg-cyan-700/70 text-white font-semibold hover:bg-cyan-800/80 cursor-pointer"
+                : "bg-slate-800 text-slate-300 hover:bg-slate-700 cursor-pointer");
+
+    div.innerHTML = content || "";
+
+    if (entryId) {
+        div.title = "Click to remove class";
+        div.addEventListener("click", function () {
+            deleteTimetable(entryId);
+        });
+    }
+    return div;
+}
+
+function renderTimetable(){
+  const user=getUserData();
+  if(!user) return;
+
+  const semester=document.getElementById("tt-semester")?.value||currentSemester;
+  const grid=document.getElementById("timetable-grid");
+  if(!grid) return;
+
+  grid.innerHTML="";
+  grid.style.gridTemplateColumns=`120px repeat(${DAYS.length},minmax(140px,1fr))`;
+
+  grid.appendChild(makeCell("Time / Day",true));
+  DAYS.forEach(d=>grid.appendChild(makeCell(d,true)));
+
+  TIME_SLOTS.forEach(slot=>{
+    grid.appendChild(makeCell(slot,true));
+    DAYS.forEach(day=>{
+      const e=user.timetable.find(
+        t=>t.semester===semester&&t.day===day&&t.time===slot
+      );
+      grid.appendChild(makeCell(e?`<b class='text-white'>${e.course}</b><br>
+<span class="text-xs text-slate-400"><span class='text-cyan-200'>(${e.room && e.room.trim() ? e.room : "TBD"})</span></span><br>
+<button class="mt-1 text-xs text-red-400 underline" onclick="deleteTimetable(${e.id})">Delete</button>`:""));
+    });
+  });
+}
+
+function addTimetable(){
+  const users=JSON.parse(localStorage.getItem("users")||"{}");
+  const semester=document.getElementById("tt-semester")?.value||currentSemester;
+
+  users[currentUser].timetable.push({
+    id:Date.now(),
+    semester,
+    day:ttDay.value,
+    time:ttTime.value,
+    course:ttCourse.value.trim(),
+    room:ttRoom.value.trim() || "TBD"
+  });
+
+  localStorage.setItem("users",JSON.stringify(users));
+  renderTimetable();
+}
+
+function autoFillTimetable(){
+  const users=JSON.parse(localStorage.getItem("users")||"{}");
+  const user=users[currentUser];
+  const semester=document.getElementById("tt-semester")?.value||currentSemester;
+  const courses=user.courses[semester]||[];
+
+  let i=0;
+  for(const d of DAYS){
+    for(const s of TIME_SLOTS){
+      if(i>=courses.length) break;
+      if(!user.timetable.find(t=>t.semester===semester&&t.day===d&&t.time===s)){
+        user.timetable.push({
+          id:Date.now()+Math.random(),
+          semester,day:d,time:s,
+          course:courses[i].name,
+          room:"TBD"
+        });
+        i++;
+      }
+    }
+  }
+  localStorage.setItem("users",JSON.stringify(users));
+  renderTimetable();
+}
+
+
+/* ===== ATTENDANCE UNDO SUPPORT ===== */
+let attendanceUndoStack = [];
+
+function pushAttendanceState() {
+  const users = JSON.parse(localStorage.getItem("users") || "{}");
+  attendanceUndoStack.push(JSON.stringify(users[currentUser].attendance || {}));
+}
+
+function undoAttendance() {
+  if (attendanceUndoStack.length === 0) {
+    alert("No attendance action to undo");
+    return;
+  }
+  const users = JSON.parse(localStorage.getItem("users") || "{}");
+  users[currentUser].attendance = JSON.parse(attendanceUndoStack.pop());
+  localStorage.setItem("users", JSON.stringify(users));
+  renderAttendance();
+}
+
+
+/* ===== ANIMATION HELPERS ===== */
+function animateNumber(el,start,end,duration=400){
+  let t0=null;
+  function step(t){
+    if(!t0) t0=t;
+    const p=Math.min((t-t0)/duration,1);
+    el.textContent=(start+(end-start)*p).toFixed(2);
+    if(p<1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+/* Patch switchTab animation */
+const _origSwitchTab = window.switchTab;
+window.switchTab = function(tabName){
+  _origSwitchTab(tabName);
+  const el=document.getElementById("content-"+tabName);
+  if(el){
+    el.classList.add("fade-enter");
+    requestAnimationFrame(()=>el.classList.add("fade-enter-active"));
+  }
+};
+
+/* Patch renderCourses card animation */
+const _origRenderCourses = window.renderCourses;
+window.renderCourses = function(){
+  _origRenderCourses();
+  document.querySelectorAll("#courses-list > div").forEach(c=>{
+    c.classList.add("card-enter");
+    requestAnimationFrame(()=>c.classList.add("card-enter-active"));
+  });
+
+  const sg=document.getElementById("sgpa-display");
+  const cg=document.getElementById("cgpa-display");
+  if(sg) animateNumber(sg,0,parseFloat(sg.textContent)||0);
+  if(cg) animateNumber(cg,0,parseFloat(cg.textContent)||0);
+};
+
+</script>
+    <style>
+        body {
+            background-image: url('background.jpg');
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+            background-color: #0a1628;
+        }
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(71, 85, 105, 0.5);
+        }
+        .input-field {
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid rgba(71, 85, 105, 0.5);
+            color: #e2e8f0;
+        }
+        .input-field::placeholder {
+            color: #64748b;
+        }
+        .input-field:focus {
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.5);
+        }
+        .btn-primary {
+            background: linear-gradient(to right, rgba(8, 145, 178, 0.8), rgba(37, 99, 235, 0.8));
+            border: 1px solid rgba(6, 182, 212, 0.5);
+        }
+        .btn-primary:hover {
+            background: linear-gradient(to right, rgba(14, 116, 144, 0.8), rgba(29, 78, 216, 0.8));
+        }
+        .tab-active {
+            background: linear-gradient(to right, rgba(8, 145, 178, 0.8), rgba(37, 99, 235, 0.8));
+            color: white;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .tab-inactive {
+            color: #cbd5e1;
+        }
+        .tab-inactive:hover {
+            background: rgba(51, 65, 85, 0.5);
+        }
+        .pwd-valid {
+            color: #10b981 !important;
+        }
+        .pwd-invalid {
+            color: #ef4444 !important;
+        }
+    
+/* ===== ANIMATIONS ===== */
+.fade-enter{opacity:0;transform:translateY(8px)}
+.fade-enter-active{opacity:1;transform:translateY(0);transition:all .35s ease}
+
+.card-enter{opacity:0;transform:scale(.95)}
+.card-enter-active{opacity:1;transform:scale(1);transition:all .25s ease}
+
+.glass-panel{transition:transform .3s ease,box-shadow .3s ease}
+.glass-panel:hover{transform:translateY(-2px);box-shadow:0 12px 30px rgba(0,0,0,.3)}
+
+.btn-primary:active{transform:scale(.97)}
+
+#timetable-grid div:hover{transform:scale(1.02);transition:transform .15s ease}
+
+#auth-screen .glass-panel{
+  animation:floatIn .6s ease
+}
+@keyframes floatIn{
+  from{opacity:0;transform:translateY(20px) scale(.96)}
+  to{opacity:1;transform:translateY(0) scale(1)}
+}
+
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+.animate-fadeIn {
+  animation: fadeIn 0.25s ease;
+}
+
+</style>
+</head>
+
+<!-- Info Button -->
+<button id="infoBtn"
+  class="fixed top-4 left-4 z-50 w-10 h-10 rounded-full bg-cyan-600/80 text-white font-bold
+         hover:bg-cyan-700/90 shadow-lg transition flex items-center justify-center">
+  i
+</button>
+
+<!-- Info Modal -->
+<div id="infoModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60">
+  <div class="glass-panel rounded-lg p-6 max-w-sm w-full text-center animate-fadeIn">
+    <h2 class="text-xl font-bold text-cyan-300 mb-2">About</h2>
+    <p class="text-slate-200 mb-3">Created by <b>Tejash</b></p>
+    <p class="text-slate-400 text-sm mb-4">
+      For features to be added, email:
+      <br>
+      <a href="mailto:tejashreddy1245@gmail.com" class="text-cyan-400 underline">
+        tejashreddy1245@gmail.com
+      </a>
+    
+<div class="flex justify-center gap-6 mt-4 mb-4">
+  <a href="https://www.linkedin.com/in/tejash-r-38b9a2363/" target="_blank"
+     class="text-cyan-400 hover:text-cyan-300 transition transform hover:scale-110"
+     title="LinkedIn">
+    <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
+      <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.026-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.476-.9 1.637-1.85 3.366-1.85 3.6 0 4.27 2.368 4.27 5.455v6.286zM5.337 7.433a2.062 2.062 0 110-4.124 2.062 2.062 0 010 4.124zM6.814 20.452H3.86V9h2.954v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.727v20.545C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.273V1.727C24 .774 23.2 0 22.222 0z"/>
+    </svg>
+  </a>
+
+  <a href="https://github.com/INFERNO49-09/College-Dashboard" target="_blank"
+     class="text-slate-300 hover:text-white transition transform hover:scale-110"
+     title="GitHub">
+    <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
+      <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.387-1.333-1.757-1.333-1.757-1.089-.745.084-.729.084-.729 1.205.084 1.84 1.236 1.84 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.418-1.305.762-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.468-2.38 1.236-3.22-.123-.303-.536-1.523.117-3.176 0 0 1.008-.322 3.3 1.23a11.5 11.5 0 013.003-.404c1.02.005 2.047.138 3.003.404 2.292-1.552 3.297-1.23 3.297-1.23.655 1.653.242 2.873.12 3.176.77.84 1.235 1.91 1.235 3.22 0 4.61-2.805 5.625-5.475 5.92.43.37.823 1.102.823 2.222 0 1.606-.015 2.896-.015 3.286 0 .322.216.694.825.576C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
+    </svg>
+  </a>
+</div>
+
+    </p>
+    <button onclick="closeInfoModal()"
+      class="btn-primary px-4 py-1.5 text-sm rounded-md text-white">
+      Close
+    </button>
+  </div>
+</div>
+
+<body class="min-h-screen">
+    <!-- Login/Registration Screen -->
+    <div id="auth-screen" class="min-h-screen bg-gradient-to-b from-slate-900/95 via-slate-900/90 to-slate-800/95 flex items-center justify-center p-4">
+        <div class="glass-panel rounded-lg shadow-2xl p-8 max-w-md w-full">
+            <h1 class="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent mb-6 text-center">
+                Student Management System
+            </h1>
+            
+            <div id="login-form">
+                <h2 class="text-xl font-semibold text-cyan-300 mb-4">Login</h2>
+                <input type="text" id="login-username" placeholder="Username" class="input-field w-full px-4 py-2 rounded-lg mb-3">
+                <input type="password" id="login-password" placeholder="Password" class="input-field w-full px-4 py-2 rounded-lg mb-3">
+                <button onclick="login()" class="btn-primary w-full px-6 py-2 text-white rounded-lg transition shadow-lg">
+                    Login
+                </button>
+                <p class="text-slate-400 text-center mt-4">Don't have an account? <button onclick="showRegister()" class="text-cyan-400 hover:underline">Register</button></p>
+            </div>
+
+            <div id="register-form" style="display: none;">
+                <h2 class="text-xl font-semibold text-cyan-300 mb-4">Register</h2>
+                <input type="text" id="reg-username" placeholder="Username" class="input-field w-full px-4 py-2 rounded-lg mb-3">
+                <input type="password" id="reg-password" placeholder="Password" class="input-field w-full px-4 py-2 rounded-lg mb-3">
+                <input type="password" id="reg-confirm-password" placeholder="Confirm Password" class="input-field w-full px-4 py-2 rounded-lg mb-3">
+                <div class="text-xs text-slate-400 mb-3">
+                    <p>Password must contain:</p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li id="pwd-length" class="text-slate-500">At least 8 characters</li>
+                        <li id="pwd-uppercase" class="text-slate-500">One uppercase letter</li>
+                        <li id="pwd-lowercase" class="text-slate-500">One lowercase letter</li>
+                        <li id="pwd-number" class="text-slate-500">One number</li>
+                    </ul>
+                </div>
+                
+                <select id="reg-discipline" onchange="checkDiscipline()" class="input-field w-full px-4 py-2 rounded-lg mb-3">
+                    <option value="">Select Discipline</option>
+                    <option value="A1">A1</option>
+                    <option value="A2">A2</option>
+                    <option value="A3">A3</option>
+                    <option value="A4">A4</option>
+                    <option value="A5">A5</option>
+                    <option value="A7">A7</option>
+                    <option value="A8">A8</option>
+                    <option value="AD">AD</option>
+                    <option value="AA">AA</option>
+                    <option value="AJ">AJ</option>
+                    <option value="B1">B1</option>
+                    <option value="B2">B2</option>
+                    <option value="B3">B3</option>
+                    <option value="B4">B4</option>
+                    <option value="B5">B5</option>
+                    <option value="B7">B7</option>
+                </select>
+
+                <div id="dual-discipline-section" style="display: none;">
+                    <label class="text-cyan-300 text-sm mb-2 block">Select A-series discipline:</label>
+                    <select id="reg-dual-discipline" class="input-field w-full px-4 py-2 rounded-lg mb-3">
+                        <option value="">Select A Discipline</option>
+                        <option value="A1">A1</option>
+                        <option value="A2">A2</option>
+                        <option value="A3">A3</option>
+                        <option value="A4">A4</option>
+                        <option value="A5">A5</option>
+                        <option value="A7">A7</option>
+                        <option value="A8">A8</option>
+                        <option value="A8">AA</option>
+                        <option value="A8">AD</option>
+                        <option value="A8">AJ</option>
+                    </select>
+                </div>
+
+                <button onclick="register()" class="btn-primary w-full px-6 py-2 text-white rounded-lg transition shadow-lg">
+                    Register
+                </button>
+                <p class="text-slate-400 text-center mt-4">Already have an account? <button onclick="showLogin()" class="text-cyan-400 hover:underline">Login</button></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="main-app" style="display: none;" class="min-h-screen bg-gradient-to-b from-slate-900/95 via-slate-900/90 to-slate-800/95">
+        <div class="container mx-auto px-4 py-8 max-w-6xl">
+            
+            <!-- Header -->
+            <div class="glass-panel rounded-lg shadow-2xl p-6 mb-6">
+                <div class="flex justify-between items-center flex-wrap gap-3">
+                    <div>
+                        <h1 class="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
+                            Student Management System
+                        </h1>
+                        <p class="text-slate-400 text-sm mt-1">Welcome, <span id="username-display" class="text-cyan-300"></span> | <span id="discipline-display" class="text-cyan-300"></span></p>
+                    </div>
+                    <div class="flex gap-3">
+                        <button onclick="toggleEditMode()" id="editBtn" class="px-4 py-2 rounded-lg font-semibold transition shadow-lg bg-cyan-600/80 text-white hover:bg-cyan-700/80 border border-cyan-500/50">
+                            Edit Mode
+                        </button>
+                        <button onclick="logout()" class="px-4 py-2 rounded-lg font-semibold transition shadow-lg bg-red-600/80 text-white hover:bg-red-700/80 border border-red-500/50">
+                            Logout
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Navigation Tabs -->
+            <div class="glass-panel rounded-lg shadow-2xl mb-6">
+                <div class="flex border-b border-slate-700/50 flex-wrap">
+                    <button onclick="switchTab('cgpa')" id="tab-cgpa" class="tab-btn flex-1 flex items-center justify-center gap-2 py-4 px-6 font-semibold transition tab-active">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+                        CGPA
+                    </button>
+                    <button onclick="switchTab('timetable')" id="tab-timetable" class="tab-btn flex-1 flex items-center justify-center gap-2 py-4 px-6 font-semibold transition tab-inactive">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        Timetable
+                    </button>
+
+<button onclick="switchTab('attendance')" id="tab-attendance"
+ class="tab-btn flex-1 flex items-center justify-center gap-2 py-4 px-6 font-semibold transition tab-inactive">
+📊 Attendance
+</button>
+
+                    <button onclick="switchTab('expenses')" id="tab-expenses" class="tab-btn flex-1 flex items-center justify-center gap-2 py-4 px-6 font-semibold transition tab-inactive">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        Expenses
+                    </button>
+                    <button onclick="switchTab('calendar')" id="tab-calendar" class="tab-btn flex-1 flex items-center justify-center gap-2 py-4 px-6 font-semibold transition tab-inactive">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                        Calendar
+                    </button>
+                </div>
+            </div>
+
+            <!-- Content Area -->
+            <div class="glass-panel rounded-lg shadow-2xl p-6">
+                
+                <!-- CGPA Calculator Tab -->
+                <div id="content-cgpa" class="tab-content">
+                    <h2 class="text-2xl font-bold mb-6 text-cyan-400">CGPA Calculator (Semester-wise)</h2>
+
+<!-- ADMIN COURSE CONTROL -->
+<div id="admin-panel" class="glass-panel p-4 rounded-lg mb-6 hidden">
+    <h3 class="text-lg font-semibold text-amber-300 mb-3">
+        Admin: Add Course by Discipline
+    </h3>
+
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <select id="admin-discipline" class="input-field px-3 py-2 rounded-lg">
+            <option value="">Select Discipline</option>
+            <option>A1</option><option>A2</option><option>A3</option>
+            <option>A4</option><option>A5</option><option>A7</option>
+            <option>A8</option><option>AA</option><option>AD</option>
+            <option>AJ</option><option>B1</option><option>B2</option>
+            <option>B3</option><option>B4</option><option>B5</option>
+            <option>B7</option>
+        </select>
+
+        <input id="admin-course-name" placeholder="Course Name" class="input-field px-3 py-2 rounded-lg">
+        <input id="admin-course-credits" type="number" placeholder="Credits" class="input-field px-3 py-2 rounded-lg">
+
+        <button onclick="adminAddCourseByDiscipline()" class="btn-primary px-4 py-2 rounded-lg">
+            Add
+        </button>
+    </div>
+</div>
+
+                    
+                    <div class="mb-6">
+                        <label class="text-cyan-300 font-semibold mb-2 block">Select Semester:</label>
+                        <select id="semester-select" onchange="changeSemester()" class="input-field px-4 py-2 rounded-lg"><option value="1-1">1-1</option><option value="1-2">1-2</option><option value="2-1">2-1</option><option value="2-2">2-2</option><option value="PS1">PS1</option><option value="3-1">3-1</option><option value="3-2">3-2</option><option value="ST">ST</option><option value="4-1">4-1</option><option value="4-2">4-2</option><option value="5-1">5-1</option><option value="5-2">5-2</option></select>
+                    </div>
+
+                    <div id="edit-course-add" class="glass-panel border-slate-600/50 p-4 rounded-lg mb-6" style="display: none;">
+                        <h3 class="font-semibold mb-3 text-cyan-300">Add New Course</h3>
+                        <div class="flex gap-3 flex-wrap">
+                            <input type="text" id="courseName" placeholder="Course Name" class="input-field flex-1 min-w-[200px] px-4 py-2 rounded-lg">
+                            <input type="number" id="courseCredits" placeholder="Credits" min="1" max="25" class="input-field w-32 px-4 py-2 rounded-lg">
+                            <button onclick="addCourse()" class="btn-primary px-6 py-2 text-white rounded-lg transition shadow-lg flex items-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                                Add
+                            </button>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-2">Current semester credits: <span id="current-credits">0</span> / 25</p>
+                    </div>
+
+                    <div id="courses-list" class="space-y-3 mb-6"></div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="bg-gradient-to-r from-cyan-600/80 to-blue-600/80 backdrop-blur-sm text-white p-6 rounded-lg border border-cyan-500/50 shadow-xl">
+                            <h3 class="text-xl font-semibold mb-2">Semester SGPA</h3>
+                            <p id="sgpa-display" class="text-4xl font-bold">0.00</p>
+                        </div>
+                        <div class="bg-gradient-to-r from-purple-600/80 to-pink-600/80 backdrop-blur-sm text-white p-6 rounded-lg border border-purple-500/50 shadow-xl">
+                            <h3 class="text-xl font-semibold mb-2">Overall CGPA</h3>
+                            <p id="cgpa-display" class="text-4xl font-bold">0.00</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Timetable Tab -->
+                <div id="content-timetable" class="tab-content" style="display: none;">
+                    <h2 class="text-2xl font-bold mb-6 text-cyan-400">Weekly Timetable</h2>
+                    
+                    <div id="edit-timetable-add" class="glass-panel border-slate-600/50 p-4 rounded-lg mb-6" style="display: none;">
+                        <h3 class="font-semibold mb-3 text-cyan-300">Add Timetable Entry</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                            <select id="ttDay" class="input-field px-4 py-2 rounded-lg">
+                                <option value="Monday">Monday</option>
+                                <option value="Tuesday">Tuesday</option>
+                                <option value="Wednesday">Wednesday</option>
+                                <option value="Thursday">Thursday</option>
+                                <option value="Friday">Friday</option>
+                                <option value="Saturday">Saturday</option>
+                            </select>
+                            <select id="ttTime" class="input-field px-4 py-2 rounded-lg">
+<option>08:00-09:00</option><option>09:00-10:00</option>
+<option>10:00-11:00</option><option>11:00-12:00</option>
+<option>12:00-13:00</option><option>13:00-14:00</option>
+<option>14:00-15:00</option><option>15:00-16:00</option>
+<option>16:00-17:00</option><option>17:00-18:00</option>
+</select>
+                            <input type="text" id="ttCourse" placeholder="Course" class="input-field px-4 py-2 rounded-lg">
+                            <input type="text" id="ttRoom" placeholder="Room" class="input-field px-4 py-2 rounded-lg">
+                        </div>
+                        <button onclick="addTimetable()" class="btn-primary mt-3 px-6 py-2 text-white rounded-lg transition shadow-lg flex items-center gap-2">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                            Add Entry
+                        </button>
+                    </div>
+
+                    <div class="mb-4">
+<label class="text-cyan-300 font-semibold mr-2">Select Semester:</label>
+<select id="tt-semester" onchange="renderTimetable()" class="input-field px-3 py-2 rounded-lg"><option value="1-1">1-1</option><option value="1-2">1-2</option><option value="2-1">2-1</option><option value="2-2">2-2</option><option value="PS1">PS1</option><option value="3-1">3-1</option><option value="3-2">3-2</option><option value="ST">ST</option><option value="4-1">4-1</option><option value="4-2">4-2</option><option value="5-1">5-1</option><option value="5-2">5-2</option></select>
+</div>
+<div class="overflow-x-auto">
+  <div id="timetable-grid" class="grid border border-slate-600 rounded-lg"></div>
+</div>
+                </div>
+
+                
+<!-- Attendance Tab -->
+<div id="content-attendance" class="tab-content" style="display:none;">
+  <h2 class="text-2xl font-bold mb-6 text-cyan-400">Attendance Dashboard</h2>
+
+  <div class="mb-4">
+    <label class="text-cyan-300 font-semibold mr-2">Select Semester:</label>
+    <select id="att-semester" onchange="renderAttendance()" class="input-field px-3 py-2 rounded-lg"><option value="1-1">1-1</option><option value="1-2">1-2</option><option value="2-1">2-1</option><option value="2-2">2-2</option><option value="PS1">PS1</option><option value="3-1">3-1</option><option value="3-2">3-2</option><option value="ST">ST</option><option value="4-1">4-1</option><option value="4-2">4-2</option><option value="5-1">5-1</option><option value="5-2">5-2</option></select>
+  </div>
+
+  
+  <div class="mb-4 flex gap-3">
+    <button onclick="undoAttendance()" 
+      class="px-4 py-2 rounded-lg bg-amber-600/80 text-white hover:bg-amber-700/80">
+      Undo Last Attendance Action
+    </button>
+  </div>
+
+<div id="attendance-list" class="space-y-4"></div>
+</div>
+
+
+<!-- Expenses Tab -->
+                <div id="content-expenses" class="tab-content" style="display: none;">
+                    <h2 class="text-2xl font-bold mb-6 text-cyan-400">Expense Tracker</h2>
+                    
+                    <div class="glass-panel border-slate-600/50 p-4 rounded-lg mb-6">
+                        <h3 class="font-semibold mb-3 text-cyan-300">Add New Expense</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                            <input type="text" id="expCategory" placeholder="Category" class="input-field px-4 py-2 rounded-lg">
+                            <input type="number" id="expAmount" placeholder="Amount" class="input-field px-4 py-2 rounded-lg">
+                            <input type="date" id="expDate" class="input-field px-4 py-2 rounded-lg">
+                            <input type="text" id="expDesc" placeholder="Description" class="input-field px-4 py-2 rounded-lg">
+                        </div>
+                        <button onclick="addExpense()" class="btn-primary mt-3 px-6 py-2 text-white rounded-lg transition shadow-lg flex items-center gap-2">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                            Add Expense
+                        </button>
+                    </div>
+
+                    <div class="bg-gradient-to-r from-emerald-600/80 to-teal-600/80 backdrop-blur-sm text-white p-6 rounded-lg mb-6 border border-emerald-500/50 shadow-xl">
+                        <h3 class="text-xl font-semibold mb-2">Total Expenses</h3>
+                        <p id="total-expenses" class="text-4xl font-bold">₹0.00</p>
+                    </div>
+
+                    <div id="expenses-list" class="space-y-3"></div>
+                </div>
+
+                <!-- Calendar Tab -->
+                <div id="content-calendar" class="tab-content" style="display: none;">
+                    <h2 class="text-2xl font-bold mb-6 text-cyan-400">Academic Calendar</h2>
+                    
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                        <!-- Calendar View -->
+                        <div class="glass-panel border-slate-600/50 p-4 rounded-lg">
+                            <div class="flex justify-between items-center mb-4">
+                                <button onclick="previousMonth()" class="p-2 text-cyan-400 hover:bg-slate-600/50 rounded">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                                </button>
+                                <h3 class="text-lg font-semibold text-cyan-300" id="calendar-month-year"></h3>
+                                <button onclick="nextMonth()" class="p-2 text-cyan-400 hover:bg-slate-600/50 rounded">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                                </button>
+                            </div>
+                            <div class="grid grid-cols-7 gap-1">
+                                <div class="text-center text-xs font-semibold text-slate-400 py-2">Sun</div>
+                                <div class="text-center text-xs font-semibold text-slate-400 py-2">Mon</div>
+                                <div class="text-center text-xs font-semibold text-slate-400 py-2">Tue</div>
+                                <div class="text-center text-xs font-semibold text-slate-400 py-2">Wed</div>
+                                <div class="text-center text-xs font-semibold text-slate-400 py-2">Thu</div>
+                                <div class="text-center text-xs font-semibold text-slate-400 py-2">Fri</div>
+                                <div class="text-center text-xs font-semibold text-slate-400 py-2">Sat</div>
+                                <div id="calendar-days" class="col-span-7 grid grid-cols-7 gap-1"></div>
+                            </div>
+                        </div>
+
+                        <!-- Add Event Form -->
+                        <div id="edit-calendar-add" class="glass-panel border-slate-600/50 p-4 rounded-lg" style="display: none;">
+                            <h3 class="font-semibold mb-3 text-cyan-300">Add Event for Selected Date</h3>
+                            <div class="space-y-3">
+                                <div>
+                                    <label class="text-slate-300 text-sm mb-1 block">Selected Date:</label>
+                                    <input type="text" id="selected-date-display" readonly class="input-field w-full px-4 py-2 rounded-lg bg-slate-700/50">
+                                </div>
+                                <input type="text" id="eventTitle" placeholder="Event Title" class="input-field w-full px-4 py-2 rounded-lg">
+                                <select id="eventType" class="input-field w-full px-4 py-2 rounded-lg">
+                                    <option value="general">General</option>
+                                    <option value="exam">Exam</option>
+                                    <option value="deadline">Deadline</option>
+                                    <option value="holiday">Holiday</option>
+                                </select>
+                                <button onclick="addEvent()" class="btn-primary w-full px-6 py-2 text-white rounded-lg transition shadow-lg flex items-center justify-center gap-2">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                                    Add Event
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Event Info (when not in edit mode) -->
+                        <div id="calendar-info" class="glass-panel border-slate-600/50 p-4 rounded-lg">
+                            <h3 class="font-semibold mb-3 text-cyan-300">Select a date to view events</h3>
+                            <p class="text-slate-400 text-sm">Click on any date in the calendar to see events for that day. Enable Edit Mode to add new events.</p>
+                        </div>
+                    </div>
+
+                    <div id="calendar-list" class="space-y-3"></div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+
+// ---- ADMIN INITIALIZATION ----
+function initializeAdmin() {
+    const users = JSON.parse(localStorage.getItem('users') || '{}');
+    if (!users.ADMIN) {
+        users.ADMIN = {
+            password: hashPassword('Tej@sh13'),
+            discipline: 'ADMIN',
+            semesters: [],
+            courses: {},
+            timetable: [],
+            expenses: [],
+            events: [],
+            isAdmin: true
+        };
+        localStorage.setItem('users', JSON.stringify(users));
+    }
+}
+initializeAdmin();
+
+        let currentUser = null;
+        let isEditMode = false;
+        let currentSemester = '1-1';
+        let calendarDate = new Date();
+        let selectedDate = null;
+        const gradePoints = { 'A': 10, 'A-': 9, 'B': 8, 'B-': 7, 'C': 6, 'C-': 5, 'D': 4, 'F': 0 };
+
+        // Auth functions
+        function showRegister() {
+            document.getElementById('login-form').style.display = 'none';
+            document.getElementById('register-form').style.display = 'block';
+        }
+
+        function showLogin() {
+            document.getElementById('login-form').style.display = 'block';
+            document.getElementById('register-form').style.display = 'none';
+        }
+
+        // Password validation
+        function validatePassword(password) {
+            const requirements = {
+                length: password.length >= 8,
+                uppercase: /[A-Z]/.test(password),
+                lowercase: /[a-z]/.test(password),
+                number: /[0-9]/.test(password)
+            };
+            return requirements;
+        }
+
+        // Real-time password validation
+        document.addEventListener('DOMContentLoaded', function() {
+            const pwdInput = document.getElementById('reg-password');
+            if (pwdInput) {
+                pwdInput.addEventListener('input', function() {
+                    const pwd = this.value;
+                    const requirements = validatePassword(pwd);
+                    
+                    document.getElementById('pwd-length').className = requirements.length ? 'text-emerald-400 pwd-valid' : 'text-slate-500 pwd-invalid';
+                    document.getElementById('pwd-uppercase').className = requirements.uppercase ? 'text-emerald-400 pwd-valid' : 'text-slate-500 pwd-invalid';
+                    document.getElementById('pwd-lowercase').className = requirements.lowercase ? 'text-emerald-400 pwd-valid' : 'text-slate-500 pwd-invalid';
+                    document.getElementById('pwd-number').className = requirements.number ? 'text-emerald-400 pwd-valid' : 'text-slate-500 pwd-invalid';
+                });
+            }
+        });
+
+        // Hash password (simple hash - in production use bcrypt or similar)
+        function hashPassword(password) {
+            let hash = 0;
+            for (let i = 0; i < password.length; i++) {
+                const char = password.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash;
+            }
+            return hash.toString(36);
+        }
+
+        function checkDiscipline() {
+            const discipline = document.getElementById('reg-discipline').value;
+            const dualSection = document.getElementById('dual-discipline-section');
+            if (discipline.startsWith('B')) {
+                dualSection.style.display = 'block';
+            } else {
+                dualSection.style.display = 'none';
+            }
+        }
+
+        function register() {
+            const username = document.getElementById('reg-username').value.trim();
+            const password = document.getElementById('reg-password').value;
+            const confirmPassword = document.getElementById('reg-confirm-password').value;
+            const discipline = document.getElementById('reg-discipline').value;
+            const dualDiscipline = document.getElementById('reg-dual-discipline').value;
+
+            // Validation
+            if (!username || !password || !discipline) {
+                alert('Please fill all required fields');
+                return;
+            }
+
+            if (username.length < 3) {
+                alert('Username must be at least 3 characters long');
+                return;
+            }
+
+            // Password validation
+            const pwdRequirements = validatePassword(password);
+            if (!pwdRequirements.length || !pwdRequirements.uppercase || 
+                !pwdRequirements.lowercase || !pwdRequirements.number) {
+                alert('Password does not meet all requirements');
+                return;
+            }
+
+            if (password !== confirmPassword) {
+                alert('Passwords do not match');
+                return;
+            }
+
+            if (discipline.startsWith('B') && !dualDiscipline) {
+                alert('Please select an A-series discipline for B-series students');
+                return;
+            }
+
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            if (users[username]) {
+                alert('Username already exists');
+                return;
+            }
+
+            const semesters = discipline.startsWith('B') 
+                ? ['1-1','1-2','2-1','2-2','PS1','3-1','3-2','ST','4-1','4-2','5-1','5-2']
+                : ['1-1','1-2','2-1','2-2','PS1','3-1','3-2','ST','4-1','4-2'];
+
+            users[username] = {
+                password: hashPassword(password),
+                discipline: discipline,
+                dualDiscipline: discipline.startsWith('B') ? dualDiscipline : null,
+                semesters: semesters,
+                courses: {},
+                timetable: [],
+                expenses: [],
+                events: []
+            };
+
+            // Initialize empty courses for each semester
+            semesters.forEach(sem => {
+                users[username].courses[sem] = [];
+            });
+
+            localStorage.setItem('users', JSON.stringify(users));
+            alert('Registration successful! Please login.');
+            
+            // Clear form
+            document.getElementById('reg-username').value = '';
+            document.getElementById('reg-password').value = '';
+            document.getElementById('reg-confirm-password').value = '';
+            document.getElementById('reg-discipline').value = '';
+            
+            showLogin();
+        }
+
+        function login() {
+            const username = document.getElementById('login-username').value.trim();
+            const password = document.getElementById('login-password').value;
+            
+            if (!username || !password) {
+                alert('Please enter username and password');
+                return;
+            }
+
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            if (!users[username]) {
+                alert('User not found. Please register first.');
+                return;
+            }
+
+            // Verify password
+            if (users[username].password !== hashPassword(password)) {
+                alert('Incorrect password');
+                return;
+            }
+
+            currentUser = username;
+            const isAdmin = users[username].isAdmin === true;
+            document.getElementById('auth-screen').style.display = 'none';
+            document.getElementById('main-app').style.display = 'block';
+            document.getElementById('username-display').textContent = username;
+            
+            const userData = users[username];
+            const disciplineText = userData.dualDiscipline 
+                ? `${userData.discipline} + ${userData.dualDiscipline}` 
+                : userData.discipline;
+            document.getElementById('discipline-display').textContent = disciplineText;
+            if (isAdmin) showAdminPanel();
+
+            // Set up semester selector
+            const semSelect = document.getElementById('semester-select');
+            semSelect.innerHTML = userData.semesters.map(sem => 
+                `<option value="${sem}">${sem}</option>`
+            ).join('');
+
+            // Clear password field
+            document.getElementById('login-password').value = '';
+
+            loadUserData();
+            renderCalendarView();
+        }
+
+        function logout() {
+            currentUser = null;
+            isEditMode = false;
+            document.getElementById('auth-screen').style.display = 'flex';
+            document.getElementById('main-app').style.display = 'none';
+            document.getElementById('login-username').value = '';
+        }
+
+        function loadUserData() {
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            if (!users[currentUser]) return;
+
+            renderCourses();
+            renderTimetable();
+            renderExpenses();
+            renderCalendar();
+        }
+
+        function saveUserData() {
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            if (!users[currentUser]) return;
+            localStorage.setItem('users', JSON.stringify(users));
+        }
+
+        function getUserData() {
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            return users[currentUser] || null;
+        }
+
+        function toggleEditMode() {
+            isEditMode = !isEditMode;
+            const btn = document.getElementById('editBtn');
+            const editSections = ['edit-course-add', 'edit-timetable-add', 'edit-calendar-add'];
+            const calendarInfo = document.getElementById('calendar-info');
+            
+            if (isEditMode) {
+                btn.textContent = 'Exit Edit Mode';
+                btn.className = 'px-4 py-2 rounded-lg font-semibold transition shadow-lg bg-amber-600/80 text-white hover:bg-amber-700/80 border border-amber-500/50';
+                editSections.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.style.display = 'block';
+                });
+                if (calendarInfo) calendarInfo.style.display = 'none';
+            } else {
+                btn.textContent = 'Edit Mode';
+                btn.className = 'px-4 py-2 rounded-lg font-semibold transition shadow-lg bg-cyan-600/80 text-white hover:bg-cyan-700/80 border border-cyan-500/50';
+                editSections.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.style.display = 'none';
+                });
+                if (calendarInfo) calendarInfo.style.display = 'block';
+            }
+            renderCourses();
+            renderTimetable();
+            renderCalendar();
+        }
+
+        function switchTab(tabName) {
+            const allContent = document.querySelectorAll('.tab-content');
+            allContent.forEach(content => content.style.display = 'none');
+
+            const selectedContent = document.getElementById('content-' + tabName);
+            if (selectedContent) selectedContent.style.display = 'block';
+    if(tabName==="attendance") renderAttendance();
+
+            const allTabs = document.querySelectorAll('.tab-btn');
+            allTabs.forEach(tab => {
+                tab.className = 'tab-btn flex-1 flex items-center justify-center gap-2 py-4 px-6 font-semibold transition tab-inactive';
+            });
+
+            const activeTab = document.getElementById('tab-' + tabName);
+            if (activeTab) {
+                activeTab.className = 'tab-btn flex-1 flex items-center justify-center gap-2 py-4 px-6 font-semibold transition tab-active';
+            }
+        }
+
+        // CGPA Functions
+        function changeSemester() {
+            currentSemester = document.getElementById('semester-select').value;
+            renderCourses();
+        }
+
+        function getCurrentSemesterCredits() {
+            const userData = getUserData();
+            if (!userData || !userData.courses[currentSemester]) return 0;
+            return userData.courses[currentSemester].reduce((sum, c) => sum + c.credits, 0);
+        }
+
+        function addCourse() {
+            const name = document.getElementById('courseName').value.trim();
+            const credits = parseInt(document.getElementById('courseCredits').value);
+            
+            if (!name || !credits) {
+                alert('Please fill all fields');
+                return;
+            }
+
+            const currentCredits = getCurrentSemesterCredits();
+            if (currentCredits + credits > 25) {
+                alert(`Cannot add course. Would exceed 25 credit limit (Current: ${currentCredits}/25)`);
+                return;
+            }
+
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            if (!users[currentUser].courses[currentSemester]) {
+                users[currentUser].courses[currentSemester] = [];
+            }
+
+            users[currentUser].courses[currentSemester].push({
+                id: Date.now(),
+                name: name,
+                credits: credits,
+                grade: ''
+            });
+
+            localStorage.setItem('users', JSON.stringify(users));
+            document.getElementById('courseName').value = '';
+            document.getElementById('courseCredits').value = '';
+            renderCourses();
+        }
+
+        function deleteCourse(id) {
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            users[currentUser].courses[currentSemester] = users[currentUser].courses[currentSemester].filter(c => c.id !== id);
+            localStorage.setItem('users', JSON.stringify(users));
+            renderCourses();
+        }
+
+        function updateGrade(id, grade) {
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            users[currentUser].courses[currentSemester] = users[currentUser].courses[currentSemester].map(c => 
+                c.id === id ? { ...c, grade } : c
+            );
+            localStorage.setItem('users', JSON.stringify(users));
+            renderCourses();
+        }
+
+        function calculateSGPA(semester) {
+            const userData = getUserData();
+            if (!userData || !userData.courses[semester]) return 0;
+            
+            const courses = userData.courses[semester];
+            const gradedCourses = courses.filter(c => c.grade);
+            if (gradedCourses.length === 0) return 0;
+            
+            const totalPoints = gradedCourses.reduce((sum, c) => sum + (gradePoints[c.grade] || 0) * c.credits, 0);
+            const totalCredits = gradedCourses.reduce((sum, c) => sum + c.credits, 0);
+            return totalCredits > 0 ? (totalPoints / totalCredits).toFixed(2) : 0;
+        }
+
+        function calculateCGPA() {
+            const userData = getUserData();
+            if (!userData) return 0;
+
+            let totalPoints = 0;
+            let totalCredits = 0;
+
+            userData.semesters.forEach(sem => {
+                if (userData.courses[sem]) {
+                    const gradedCourses = userData.courses[sem].filter(c => c.grade);
+                    gradedCourses.forEach(c => {
+                        totalPoints += (gradePoints[c.grade] || 0) * c.credits;
+                        totalCredits += c.credits;
+                    });
+                }
+            });
+
+            return totalCredits > 0 ? (totalPoints / totalCredits).toFixed(2) : 0;
+        }
+
+        function renderCourses() {
+            const userData = getUserData();
+            if (!userData) return;
+
+            const courses = userData.courses[currentSemester] || [];
+            const container = document.getElementById('courses-list');
+            
+            container.innerHTML = courses.map(course => `
+                <div class="flex items-center gap-3 p-4 glass-panel border-slate-600/50 rounded-lg flex-wrap">
+                    <span class="flex-1 font-semibold text-slate-200 min-w-[150px]">${course.name}</span>
+                    <span class="text-slate-400">${course.credits} Credits</span>
+                    <select onchange="updateGrade(${course.id}, this.value)" class="input-field px-3 py-2 rounded-lg">
+                        <option value="">Select Grade</option>
+                        ${Object.keys(gradePoints).map(g => `<option value="${g}" ${course.grade === g ? 'selected' : ''}>${g}</option>`).join('')}
+                    </select>
+                    ${isEditMode ? `<button onclick="deleteCourse(${course.id})" class="p-2 text-red-400 hover:bg-slate-600/50 rounded border border-red-500/30">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    </button>` : ''}
+                </div>
+            `).join('');
+
+            const currentCredits = getCurrentSemesterCredits();
+            const creditDisplay = document.getElementById('current-credits');
+            if (creditDisplay) {
+                creditDisplay.textContent = currentCredits;
+                if (currentCredits > 25) {
+                    creditDisplay.className = 'text-red-400 font-bold';
+                } else {
+                    creditDisplay.className = '';
+                }
+            }
+
+            document.getElementById('sgpa-display').textContent = calculateSGPA(currentSemester);
+            document.getElementById('cgpa-display').textContent = calculateCGPA();
+        }
+
+        // Timetable Functions
+        function addTimetable() {
+            const day = document.getElementById('ttDay').value;
+            const time = document.getElementById('ttTime').value;
+            const course = document.getElementById('ttCourse').value.trim();
+            const room = document.getElementById('ttRoom').value.trim();
+            
+            if (!time || !course) {
+                alert('Please fill required fields');
+                return;
+            }
+
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            users[currentUser].timetable.push({
+                id: Date.now(),
+                day: day,
+                time: time,
+                course: course,
+                room: room
+            });
+
+            localStorage.setItem('users', JSON.stringify(users));
+            document.getElementById('ttTime').value = '';
+            document.getElementById('ttCourse').value = '';
+            document.getElementById('ttRoom').value = '';
+            renderTimetable();
+        }
+
+        function deleteTimetable(id) {
+    console.log("Deleting timetable id:", id);
+
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            users[currentUser].timetable = users[currentUser].timetable.filter(t => t.id !== id);
+            localStorage.setItem('users', JSON.stringify(users));
+            renderTimetable();
+        }
+
+        function renderTimetable() {
+            const userData = getUserData();
+            if (!userData) return;
+
+            const container = document.getElementById('timetable-list');
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            
+            container.innerHTML = days.map(day => {
+                const entries = userData.timetable.filter(t => t.day === day);
+                if (entries.length === 0) return '';
+                return `
+                    <div class="glass-panel border-slate-600/50 rounded-lg p-4">
+                        <h3 class="font-bold text-lg text-cyan-400 mb-3">${day}</h3>
+                        <div class="space-y-2">
+                            ${entries.map(entry => `
+                                <div class="flex items-center justify-between bg-slate-800/40 p-3 rounded border border-slate-600/30 flex-wrap gap-2">
+                                    <div class="flex-1 min-w-[200px]">
+                                        <span class="font-semibold text-slate-200">${entry.time}</span>
+                                        <span class="mx-3 text-slate-500">-</span>
+                                        <span class="text-slate-300">${entry.course}</span>
+                                        <span class="ml-3 text-slate-500">(${entry.room})</span>
+                                    </div>
+                                    ${isEditMode ? `<button onclick="deleteTimetable(${entry.id})" class="p-2 text-red-400 hover:bg-slate-600/50 rounded border border-red-500/30">
+                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                    </button>` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Expenses Functions
+        function addExpense() {
+            const category = document.getElementById('expCategory').value.trim();
+            const amount = parseFloat(document.getElementById('expAmount').value);
+            const date = document.getElementById('expDate').value;
+            const description = document.getElementById('expDesc').value.trim();
+            
+            if (!category || !amount || !date) {
+                alert('Please fill required fields');
+                return;
+            }
+
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            users[currentUser].expenses.push({
+                id: Date.now(),
+                category: category,
+                amount: amount,
+                date: date,
+                description: description
+            });
+
+            localStorage.setItem('users', JSON.stringify(users));
+            document.getElementById('expCategory').value = '';
+            document.getElementById('expAmount').value = '';
+            document.getElementById('expDate').value = '';
+            document.getElementById('expDesc').value = '';
+            renderExpenses();
+        }
+
+        function deleteExpense(id) {
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            users[currentUser].expenses = users[currentUser].expenses.filter(e => e.id !== id);
+            localStorage.setItem('users', JSON.stringify(users));
+            renderExpenses();
+        }
+
+        function renderExpenses() {
+            const userData = getUserData();
+            if (!userData) return;
+
+            const container = document.getElementById('expenses-list');
+            const total = userData.expenses.reduce((sum, e) => sum + e.amount, 0);
+            document.getElementById('total-expenses').textContent = `₹${total.toFixed(2)}`;
+            
+            container.innerHTML = userData.expenses.map(expense => `
+                <div class="flex items-center justify-between glass-panel border-slate-600/50 p-4 rounded-lg flex-wrap gap-3">
+                    <div class="flex-1 min-w-[200px]">
+                        <div class="font-semibold text-slate-200">${expense.category}</div>
+                        <div class="text-sm text-slate-400">
+        Total Classes: <b>${d.total}</b> |
+        Cancelled: <b>${d.cancelled}</b><br>${expense.description}</div>
+                        <div class="text-xs text-slate-500 mt-1">${expense.date}</div>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <span class="text-xl font-bold text-emerald-400">₹${expense.amount}</span>
+                        <button onclick="deleteExpense(${expense.id})" class="p-2 text-red-400 hover:bg-slate-600/50 rounded border border-red-500/30">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Calendar Functions
+        function previousMonth() {
+            calendarDate.setMonth(calendarDate.getMonth() - 1);
+            renderCalendarView();
+        }
+
+        function nextMonth() {
+            calendarDate.setMonth(calendarDate.getMonth() + 1);
+            renderCalendarView();
+        }
+
+        function selectDate(year, month, day) {
+            selectedDate = new Date(year, month, day);
+            const dateStr = selectedDate.toISOString().split('T')[0];
+            document.getElementById('selected-date-display').value = selectedDate.toLocaleDateString('en-US', { 
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+            });
+            renderCalendarView();
+            
+            // Show events for this date
+            const userData = getUserData();
+            if (userData) {
+                const dateEvents = userData.events.filter(e => e.date === dateStr);
+                const calendarInfo = document.getElementById('calendar-info');
+                if (!isEditMode && calendarInfo) {
+                    if (dateEvents.length > 0) {
+                        calendarInfo.innerHTML = `
+                            <h3 class="font-semibold mb-3 text-cyan-300">Events on ${selectedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}</h3>
+                            <div class="space-y-2">
+                                ${dateEvents.map(event => {
+                                    const badgeClass = event.type === 'exam' ? 'bg-red-600/50 text-red-200' :
+                                                      event.type === 'deadline' ? 'bg-yellow-600/50 text-yellow-200' :
+                                                      event.type === 'holiday' ? 'bg-emerald-600/50 text-emerald-200' :
+                                                      'bg-blue-600/50 text-blue-200';
+                                    return `
+                                        <div class="bg-slate-700/30 p-3 rounded">
+                                            <div class="font-semibold text-slate-200">${event.title}</div>
+                                            <span class="text-xs px-2 py-1 rounded capitalize ${badgeClass}">${event.type}</span>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        `;
+                    } else {
+                        calendarInfo.innerHTML = `
+                            <h3 class="font-semibold mb-3 text-cyan-300">No events on ${selectedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}</h3>
+                            <p class="text-slate-400 text-sm">Enable Edit Mode to add events for this date.</p>
+                        `;
+                    }
+                }
+            }
+        }
+
+        function renderCalendarView() {
+            const year = calendarDate.getFullYear();
+            const month = calendarDate.getMonth();
+            
+            document.getElementById('calendar-month-year').textContent = 
+                calendarDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+            
+            const firstDay = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            
+            const userData = getUserData();
+            const eventDates = userData ? userData.events.map(e => e.date) : [];
+            
+            let html = '';
+            
+            // Empty cells for days before month starts
+            for (let i = 0; i < firstDay; i++) {
+                html += '<div class="aspect-square"></div>';
+            }
+            
+            // Days of the month
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const hasEvent = eventDates.includes(dateStr);
+                const isSelected = selectedDate && 
+                    selectedDate.getDate() === day && 
+                    selectedDate.getMonth() === month && 
+                    selectedDate.getFullYear() === year;
+                const isToday = new Date().toDateString() === new Date(year, month, day).toDateString();
+                
+                html += `
+                    <button 
+                        onclick="selectDate(${year}, ${month}, ${day})"
+                        class="aspect-square p-1 rounded text-sm transition ${
+                            isSelected ? 'bg-cyan-600 text-white font-bold' : 
+                            isToday ? 'bg-blue-500/30 text-cyan-300 font-semibold' :
+                            'text-slate-300 hover:bg-slate-700/50'
+                        } ${hasEvent ? 'relative' : ''}"
+                    >
+                        ${day}
+                        ${hasEvent ? '<div class="absolute bottom-1 left-1/2 transform -translate-x-1/2 w-1 h-1 bg-cyan-400 rounded-full"></div>' : ''}
+                    </button>
+                `;
+            }
+            
+            document.getElementById('calendar-days').innerHTML = html;
+        }
+
+        function addEvent() {
+            if (!selectedDate) {
+                alert('Please select a date from the calendar first');
+                return;
+            }
+
+            const title = document.getElementById('eventTitle').value.trim();
+            const type = document.getElementById('eventType').value;
+            
+            if (!title) {
+                alert('Please enter event title');
+                return;
+            }
+
+            const dateStr = selectedDate.toISOString().split('T')[0];
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            users[currentUser].events.push({
+                id: Date.now(),
+                title: title,
+                date: dateStr,
+                type: type
+            });
+
+            localStorage.setItem('users', JSON.stringify(users));
+            document.getElementById('eventTitle').value = '';
+            renderCalendarView();
+            renderCalendar();
+            alert('Event added successfully!');
+        }
+
+        function deleteEvent(id) {
+            const users = JSON.parse(localStorage.getItem('users') || '{}');
+            users[currentUser].events = users[currentUser].events.filter(e => e.id !== id);
+            localStorage.setItem('users', JSON.stringify(users));
+            renderCalendar();
+        }
+
+        function renderCalendar() {
+            const userData = getUserData();
+            if (!userData) return;
+
+            const container = document.getElementById('calendar-list');
+            const sortedEvents = userData.events.sort((a, b) => new Date(a.date) - new Date(b.date));
+            
+            container.innerHTML = sortedEvents.map(event => {
+                const bgClass = event.type === 'exam' ? 'bg-red-900/30 border-red-500' :
+                               event.type === 'deadline' ? 'bg-yellow-900/30 border-yellow-500' :
+                               event.type === 'holiday' ? 'bg-emerald-900/30 border-emerald-500' :
+                               'bg-blue-900/30 border-blue-500';
+                const badgeClass = event.type === 'exam' ? 'bg-red-600/50 text-red-200' :
+                                  event.type === 'deadline' ? 'bg-yellow-600/50 text-yellow-200' :
+                                  event.type === 'holiday' ? 'bg-emerald-600/50 text-emerald-200' :
+                                  'bg-blue-600/50 text-blue-200';
+                return `
+                    <div class="flex items-center justify-between p-4 rounded-lg backdrop-blur-sm border-l-4 ${bgClass} flex-wrap gap-3">
+                        <div class="flex-1 min-w-[200px]">
+                            <div class="font-semibold text-slate-200">${event.title}</div>
+                            <div class="text-sm text-slate-400">
+        Total Classes: <b>${d.total}</b> |
+        Cancelled: <b>${d.cancelled}</b><br>${new Date(event.date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div>
+                            <div class="text-xs mt-1">
+                                <span class="px-2 py-1 rounded capitalize ${badgeClass}">${event.type}</span>
+                            </div>
+                        </div>
+                        ${isEditMode ? `<button onclick="deleteEvent(${event.id})" class="p-2 text-red-400 hover:bg-slate-600/50 rounded border border-red-500/30">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+    
+function showAdminPanel() {
+    const panel = document.getElementById('admin-panel');
+    if (panel) panel.classList.remove('hidden');
+}
+
+function adminAddCourseByDiscipline() {
+    const discipline = document.getElementById('admin-discipline').value;
+    const name = document.getElementById('admin-course-name').value.trim();
+    const credits = parseInt(document.getElementById('admin-course-credits').value);
+
+    if (!discipline || !name || !credits) {
+        alert('Fill all fields');
+        return;
+    }
+
+    const users = JSON.parse(localStorage.getItem('users') || '{}');
+
+    Object.keys(users).forEach(u => {
+        const user = users[u];
+        if (user.discipline === discipline) {
+            user.semesters.forEach(sem => {
+                user.courses[sem].push({
+                    id: Date.now() + Math.random(),
+                    name,
+                    credits,
+                    grade: ''
+                });
+            });
+        }
+    });
+
+    localStorage.setItem('users', JSON.stringify(users));
+    alert(`Course added for ${discipline} students`);
+}
+
+
+/* ===== SAFE TIMETABLE GRID (FIXED) ===== */
+const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const TIME_SLOTS = [
+ "08:00-09:00","09:00-10:00","10:00-11:00","11:00-12:00",
+ "12:00-13:00","13:00-14:00","14:00-15:00",
+ "15:00-16:00","16:00-17:00","17:00-18:00"
+];
+
+function makeCell(content, isHeader = false, entryId = null) {
+    const div = document.createElement("div");
+    const hasClass = !!content;
+
+    div.className =
+        "border border-slate-600 p-2 text-center text-sm transition-all " +
+        (isHeader
+            ? "bg-slate-700 font-bold text-cyan-300 cursor-default"
+            : hasClass
+                ? "bg-cyan-700/70 text-white font-semibold hover:bg-cyan-800/80 cursor-pointer"
+                : "bg-slate-800 text-slate-300 hover:bg-slate-700 cursor-pointer");
+
+    div.innerHTML = content || "";
+
+    if (entryId) {
+        div.title = "Click to remove class";
+        div.addEventListener("click", function () {
+            deleteTimetable(entryId);
+        });
+    }
+    return div;
+}
+
+function renderTimetable(){
+  const user=getUserData();
+  if(!user) return;
+
+  const semester=document.getElementById("tt-semester")?.value||currentSemester;
+  const grid=document.getElementById("timetable-grid");
+  if(!grid) return;
+
+  grid.innerHTML="";
+  grid.style.gridTemplateColumns=`120px repeat(${DAYS.length},minmax(140px,1fr))`;
+
+  grid.appendChild(makeCell("Time / Day",true));
+  DAYS.forEach(d=>grid.appendChild(makeCell(d,true)));
+
+  TIME_SLOTS.forEach(slot=>{
+    grid.appendChild(makeCell(slot,true));
+    DAYS.forEach(day=>{
+      const e=user.timetable.find(
+        t=>t.semester===semester&&t.day===day&&t.time===slot
+      );
+      grid.appendChild(makeCell(e?`<b class='text-white'>${e.course}</b><br>
+<span class="text-xs text-slate-400"><span class='text-cyan-200'>(${e.room && e.room.trim() ? e.room : "TBD"})</span></span><br>
+<button class="mt-1 text-xs text-red-400 underline" onclick="deleteTimetable(${e.id})">Delete</button>`:""));
+    });
+  });
+}
+
+function addTimetable(){
+  const users=JSON.parse(localStorage.getItem("users")||"{}");
+  const semester=document.getElementById("tt-semester")?.value||currentSemester;
+
+  users[currentUser].timetable.push({
+    id:Date.now(),
+    semester,
+    day:ttDay.value,
+    time:ttTime.value,
+    course:ttCourse.value.trim(),
+    room:ttRoom.value.trim() || "TBD"
+  });
+
+  localStorage.setItem("users",JSON.stringify(users));
+  renderTimetable();
+}
+
+function autoFillTimetable(){
+  const users=JSON.parse(localStorage.getItem("users")||"{}");
+  const user=users[currentUser];
+  const semester=document.getElementById("tt-semester")?.value||currentSemester;
+  const courses=user.courses[semester]||[];
+
+  let i=0;
+  for(const d of DAYS){
+    for(const s of TIME_SLOTS){
+      if(i>=courses.length) break;
+      if(!user.timetable.find(t=>t.semester===semester&&t.day===d&&t.time===s)){
+        user.timetable.push({
+          id:Date.now()+Math.random(),
+          semester,day:d,time:s,
+          course:courses[i].name,
+          room:"TBD"
+        });
+        i++;
+      }
+    }
+  }
+  localStorage.setItem("users",JSON.stringify(users));
+  renderTimetable();
+}
+
+
+/* ================= ATTENDANCE SYSTEM ================= */
+function initAttendance() {
+  const users = JSON.parse(localStorage.getItem("users") || "{}");
+  const user = users[currentUser];
+  if (!user.attendance) user.attendance = {};
+  localStorage.setItem("users", JSON.stringify(users));
+}
+
+function getClassesFromTimetable(semester) {
+  const user = getUserData();
+  const set = new Set();
+  user.timetable
+    .filter(t => t.semester === semester)
+    .forEach(t => set.add(t.course));
+  return [...set];
+}
+
+function markAttendance(course, present) {
+  pushAttendanceState();
+  const sem = document.getElementById("att-semester").value;
+  const users = JSON.parse(localStorage.getItem("users") || "{}");
+  const user = users[currentUser];
+
+  user.attendance[sem] ??= {};
+  user.attendance[sem][course] ??= { total: 0, present: 0, cancelled: 0 };
+
+  user.attendance[sem][course].total++;
+  if (present) user.attendance[sem][course].present++;
+
+  localStorage.setItem("users", JSON.stringify(users));
+  renderAttendance();
+}
+
+function markCancelled(course) {
+  pushAttendanceState();
+  const sem = document.getElementById("att-semester").value;
+  const users = JSON.parse(localStorage.getItem("users") || "{}");
+  const user = users[currentUser];
+
+  user.attendance[sem] ??= {};
+  user.attendance[sem][course] ??= { total: 0, present: 0, cancelled: 0 };
+  user.attendance[sem][course].cancelled++;
+
+  localStorage.setItem("users", JSON.stringify(users));
+  renderAttendance();
+}
+
+function renderAttendance() {
+  initAttendance();
+  const sem = document.getElementById("att-semester").value;
+  const user = getUserData();
+  const container = document.getElementById("attendance-list");
+
+  const courses = getClassesFromTimetable(sem);
+  if (courses.length === 0) {
+    container.innerHTML = '<p class="text-slate-400">No classes in timetable.</p>';
+    return;
+  }
+
+  container.innerHTML = courses.map(course => {
+    const d = user.attendance?.[sem]?.[course] || { total: 0, present: 0, cancelled: 0 };
+    const effectiveTotal = d.total;
+    const percent = effectiveTotal ? ((d.present / effectiveTotal) * 100).toFixed(1) : "0.0";
+    const need50 = Math.max(0, Math.ceil((effectiveTotal * 0.5) - d.present));
+    const border =
+      percent >= 75 ? "border-emerald-500" :
+      percent >= 50 ? "border-amber-500" :
+                      "border-red-500";
+
+    return `
+      <div class="glass-panel p-4 rounded-lg border ${border}">
+        <div class="flex justify-between items-center flex-wrap gap-3">
+          <div>
+            <h3 class="text-lg font-semibold text-cyan-300">${course}</h3>
+            <p class="text-sm text-slate-400">
+              Present ${d.present} | Total ${d.total} | Cancelled ${d.cancelled}
+            </p>
+            <p class="text-sm text-slate-400">Attendance: ${percent}%</p>
+            <p class="text-xs mt-1 ${need50 === 0 ? 'text-emerald-400' : 'text-amber-400'}">
+              ${need50 === 0 ? '✓ 50% attendance achieved' :
+              need50 + ' more class(es) needed for 50%'}
+            </p>
+          </div>
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="markAttendance('${course}', true)"
+              class="px-3 py-1 rounded bg-emerald-600 text-white">Present</button>
+            <button onclick="markAttendance('${course}', false)"
+              class="px-3 py-1 rounded bg-red-600 text-white">Absent</button>
+            <button onclick="markCancelled('${course}')"
+              class="px-3 py-1 rounded bg-slate-600 text-white">Cancelled</button>
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+
+/* ===== ATTENDANCE UNDO SUPPORT ===== */
+let attendanceUndoStack = [];
+
+function pushAttendanceState() {
+  const users = JSON.parse(localStorage.getItem("users") || "{}");
+  attendanceUndoStack.push(JSON.stringify(users[currentUser].attendance || {}));
+}
+
+function undoAttendance() {
+  if (attendanceUndoStack.length === 0) {
+    alert("No attendance action to undo");
+    return;
+  }
+  const users = JSON.parse(localStorage.getItem("users") || "{}");
+  users[currentUser].attendance = JSON.parse(attendanceUndoStack.pop());
+  localStorage.setItem("users", JSON.stringify(users));
+  renderAttendance();
+}
+
+</script>
+<script>
+// Info modal logic
+const infoBtn = document.getElementById("infoBtn");
+const infoModal = document.getElementById("infoModal");
+
+if (infoBtn) {
+  infoBtn.addEventListener("click", () => {
+    infoModal.classList.remove("hidden");
+    infoModal.classList.add("flex");
+  });
+}
+
+function closeInfoModal() {
+  infoModal.classList.add("hidden");
+  infoModal.classList.remove("flex");
+}
+
+// Close on backdrop click
+infoModal?.addEventListener("click", (e) => {
+  if (e.target === infoModal) closeInfoModal();
+});
+</script>
+</body>
+</html>
